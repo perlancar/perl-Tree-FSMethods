@@ -311,6 +311,37 @@ sub mv {
     $self->_cp_or_mv('mv', @_);
 }
 
+sub rm {
+    my $self = shift;
+    my $path = shift;
+
+    length($path)     or die "Please specify path";
+    $self->{_curnode} or die "Please load tree first";
+
+    my $path_is_abs = Path::Naive::is_abs_path($path);
+    my @path_elems  = Path::Naive::normalize_path($path);
+    die "rm: Must specify files" unless @path_elems;
+    my $path_has_wildcard = String::Wildcard::Bash::contains_wildcard($path_elems[-1]);
+    my %ls_res;
+    if ($path_has_wildcard) {
+        %ls_res = $self->ls($path);
+    } else {
+        my $wanted = pop @path_elems;
+        $path = ($path_is_abs ? "/" : "./") . join("/", @path_elems);
+        %ls_res = $self->ls($path);
+        for (keys %ls_res) {
+            delete $ls_res{$_} unless $_ eq $wanted;
+        }
+    }
+    die "rm: No matching files to delete" unless keys %ls_res;
+
+    my @nodes_to_rm = map { $ls_res{$_}{node} }
+        sort { $ls_res{$a}{order} <=> $ls_res{$b}{order} } keys %ls_res;
+    for my $node (@nodes_to_rm) {
+        Code::Includable::Tree::NodeMethods::remove($node);
+    }
+}
+
 1;
 # ABSTRACT: Perform filesystem-like operations on object tree(s)
 
