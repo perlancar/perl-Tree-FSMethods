@@ -43,10 +43,14 @@ sub new {
     $class->SUPER::new(%args);
 }
 
-sub _adjust_copied_nodes {
+sub before_cp {
     my ($self, $nodes_to_copy, $target_node) = @_;
 
-    say "D1: ", scalar(@$nodes_to_copy);
+    # adjust level, e.g. if we move level1 headings under another level1 heading
+    # then the level1 headings to be copied (as well as their descendants) will
+    # need to be demoted by 1 level.
+
+    #say "D1: ", scalar(@$nodes_to_copy);
     my $target_level = $target_node->can("level") ? $target_node->level : 0;
     my $levels_to_increase;
 
@@ -66,6 +70,11 @@ sub _adjust_copied_nodes {
                     if $node->can("level");
             });
     }
+}
+
+sub before_mv {
+    my $self = shift;
+    $self->before_cp(@_);
 }
 
 1;

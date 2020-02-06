@@ -19,10 +19,7 @@ sub new {
     if ($args{tree}) {
         $args{_curpath} = "/";
         $args{_curnode} = $args{tree};
-    } else {
-        die "Please specify 'tree'";
     }
-
     if ($args{tree1}) {
         $args{_curpath1} = "/";
         $args{_curnode1} = $args{tree1};
@@ -48,6 +45,8 @@ sub _cd {
     my $curpath =
         $which == 1 ? $self->{_curpath1} :
         $which == 2 ? $self->{_curpath2} : $self->{_curpath};
+
+    die "cd: No object loaded yet" unless $curnode;
 
     my ($node, @path_elems, $is_abs);
     if (Path::Naive::is_abs_path($path)) {
@@ -196,6 +195,21 @@ sub ls {
     %nodes_by_name;
 }
 
+sub get {
+    my $self = shift;
+    my $path = shift;
+
+    my ($dir, $file) = $path =~ m!(.*/)?(.*)!;
+    $dir //= ".";
+
+    my %ls_res = $self->ls($dir);
+    if ($ls_res{$file}) {
+        return $ls_res{$file}{node};
+    } else {
+        die "get: No such file '$file' in directory '$dir'";
+    }
+}
+
 sub ls1 {
     my $self = shift;
     local $self->{_curnode} = $self->{_curnode1};
@@ -225,13 +239,19 @@ sub cwd2 {
     $self->_cwd(2);
 }
 
-sub cp {
+sub _cp_or_mv {
     my $self = shift;
+    my $which = shift;
     my ($path1, $path2) = @_;
+
+    length($path1)     or die "Please specify path1";
+    $self->{_curnode1} or die "Please load tree1 first";
+    length($path2)     or die "Please specify path2";
+    $self->{_curnode2} or die "Please load tree2 first";
 
     my $path1_is_abs = Path::Naive::is_abs_path($path1);
     my @path1_elems = Path::Naive::normalize_path($path1);
-    die "cp: Must specify source files" unless @path1_elems;
+    die "$which: Must specify source files" unless @path1_elems;
     my $path1_has_wildcard = String::Wildcard::Bash::contains_wildcard($path1_elems[-1]);
     my %ls_res;
     if ($path1_has_wildcard) {
@@ -244,24 +264,51 @@ sub cp {
             delete $ls_res{$_} unless $_ eq $wanted;
         }
     }
-    die "cp: No matching source nodes to copy from" unless keys %ls_res;
+    die "$which: No matching source nodes to copy/move from" unless keys %ls_res;
 
     my $save_curnode2 = $self->{_curnode2};
     my $save_curpath2 = $self->{_curpath2};
     $self->cd2($path2);
 
-    my @nodes_to_copy = map { $ls_res{$_}{node} }
+    my @nodes_to_copy_or_move = map { $ls_res{$_}{node} }
         sort { $ls_res{$a}{order} <=> $ls_res{$b}{order} } keys %ls_res;
 
-    if ($self->can("_adjust_copied_nodes")) {
-        $self->_adjust_copied_nodes(\@nodes_to_copy, $self->{_curnode2});
+    if ($which eq 'cp') {
+        if ($self->can("before_cp")) {
+            $self->before_cp(\@nodes_to_copy_or_move, $self->{_curnode2});
+        }
+    } elsif ($which eq 'mv') {
+        if ($self->can("before_mv")) {
+            $self->before_mv(\@nodes_to_copy_or_move, $self->{_curnode2});
+        }
+    } else {
+        die "BUG: which must be cp/mv";
     }
 
-    push @{ $self->{_curnode2}->{children} }, @nodes_to_copy;
+    push @{ $self->{_curnode2}->{children} }, @nodes_to_copy_or_move;
+    for my $node (@nodes_to_copy_or_move) {
+        $node->parent( $self->{_curnode2} );
+    }
 
-    use DD; dd $self->{_curnode2};
+    if ($which eq 'mv') {
+        # remove the nodes from their parents
+        for my $node (@nodes_to_copy_or_move) {
+            Code::Includable::Tree::NodeMethods::remove($node);
+        }
+    }
+
     $self->{_curnode2} = $save_curnode2;
     $self->{_curpath2} = $save_curpath2;
+}
+
+sub cp {
+    my $self = shift;
+    $self->_cp_or_mv('cp', @_);
+}
+
+sub mv {
+    my $self = shift;
+    $self->_cp_or_mv('mv', @_);
 }
 
 1;
@@ -412,14 +459,14 @@ Usage:
 
  $fs->cp($path1, $path2);
 
-Copies (clones) nodes from C<tree1> to C<tree2>. Dies on failure (e.g. can't
-find source or target path).
+Copies nodes from C<tree1> to C<tree2>. Dies on failure (e.g. can't find source
+or target path).
 
 Examples:
 
  $fs->cp("proj/*perl*", "proj/");
 
-This will clone nodes under C<proj/> in the source tree matching wildcard
+This will set nodes under C<proj/> in the source tree matching wildcard
 C<*perl*> to C<proj/> in the target tree.
 
 =head2 mv
