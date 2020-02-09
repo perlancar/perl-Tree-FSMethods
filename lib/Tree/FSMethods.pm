@@ -110,7 +110,7 @@ sub ls {
     my $save_curnode;
     my $save_curpath;
     if (@_ && defined $_[0] && length $_[0]) {
-        my $path = $self->{_curpath}, $_[0];
+        my $path = Path::Naive::concat_and_normalize_path($self->{_curpath}, $_[0]);
         $save_curnode = $self->{_curnode};
         $save_curpath = $self->{_curpath};
         my @path_elems = Path::Naive::normalize_path($path);
