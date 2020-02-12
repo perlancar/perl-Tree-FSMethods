@@ -21,10 +21,6 @@ sub new {
         $args{_curpath} = "/";
         $args{_curnode} = $args{tree};
     }
-    if ($args{tree1}) {
-        $args{_curpath1} = "/";
-        $args{_curnode1} = $args{tree1};
-    }
     if ($args{tree2}) {
         $args{_curpath2} = "/";
         $args{_curnode2} = $args{tree2};
@@ -33,10 +29,12 @@ sub new {
     bless \%args, $class;
 }
 
+# note: only reads from _curnode & _curpath
 sub _read_curdir {
     my $self = shift;
 
-    my %nodes_by_name;
+    my %entries_by_name;
+    my @entries;
     my $order = 0;
 
   NODE:
@@ -77,138 +75,148 @@ sub _read_curdir {
         }
 
       HANDLE_DUPLICATES: {
-            last unless exists $nodes_by_name{$name};
+            last unless exists $entries_by_name{$name};
             my $suffix = "2";
             while (1) {
                 my $new_name = "$name.$suffix";
                 do { $name = $new_name; last }
-                    unless exists $nodes_by_name{$new_name};
+                    unless exists $entries_by_name{$new_name};
                 $suffix++;
                 die "Too many duplicate names ($name)" if $suffix >= 9999;
             }
         }
 
-      FILTER_WILDCARD: {
-            last unless $re_wildcard;
-            next NODE unless $name =~ $re_wildcard;
-        }
-
-        $nodes_by_name{$name} = {
+        my $entry = {
             order => $order,
             name  => $name,
             node  => $node,
-            path  => $self->{_curpath} .
-                ($self->{_curpath} eq '/' ? '' : '/') . $name,
+            path  => Path::Naive::concat_path($self->{_curpath}, $name),
         };
+        $entries_by_name{$name} = $entry;
+        push @entries, $entry;
+
         $order++;
     }
 
-    %nodes_by_name;
+    @entries;
 }
 
+# returns: (path exists, @entries)
 sub _glob {
     my $self = shift;
-    my ($which_obj, $path) = @_;
+    my ($which_obj, $path_wildcard) = @_;
 
-    my $rootnode =
-        $which_obj == 1 ? $self->{tree1} :
-        $which_obj == 2 ? $self->{tree2} : $self->{tree};
-    my $curnode =
-        $which_obj == 1 ? $self->{_curnode1} :
-        $which_obj == 2 ? $self->{_curnode2} : $self->{_curnode};
-    my $curpath =
-        $which_obj == 1 ? $self->{_curpath1} :
-        $which_obj == 2 ? $self->{_curpath2} : $self->{_curpath};
+    my $rootnode = $which_obj == 1 ? $self->{tree} : $self->{tree2};
+    my $curnode  = $which_obj == 1 ? $self->{_curnode} : $self->{_curnode2};
+    my $curpath  = $which_obj == 1 ? $self->{_curpath} : $self->{_curpath2};
 
     die "_glob: No object loaded yet" unless $curnode;
 
     # starting point of traversal
-    my $node = Path::Naive::is_abs_path($path) ? $rootnode : $curnode;
+    my $node = Path::Naive::is_abs_path($path_wildcard) ? $rootnode : $curnode;
+    my $starting_path = Path::Naive::is_abs_path($path_wildcard) ? "/" : $curpath;
+    my @path_elems = Path::Naive::split_path($path_wildcard);
 
-    my @all_res;
+    my @entries = ({path=>$starting_path, node=>$node});
 
     my $i = 0;
-    for my $path_elem (Path::Naive::split_path($path)) {
+    my $path_exists = 1;
+  PATH_ELEM:
+    for my $path_elem (@path_elems) {
         $i++;
         if ($path_elem eq '.') {
-            if ($i == 1) {
-                next;
-            } else {
-                @all_res = ($node);
+            for (@entries) {
+                $_->{path} = Path::Naive::concat_path($_->{path}, ".");
             }
-            next;
-        } elsif ($path_elem eq '..') {
-            if ($i == 1) {
-                for (@all_res) {
-                    $_ = $_->parent if $_->parent;
-                }
-            } else {
-                @all_res = ($node->parent ? $node->parent : $node);
+            next PATH_ELEM;
+        }
+        if ($path_elem eq '..') {
+            for (@entries) {
+                $_->{path} = Path::Naive::concat_path($_->{path}, "..");
+                # we allow ../ even on root node; it will just come back to root
+                my $parent = $_->{node}->parent;
+                $_->{node} = $parent if $parent;
             }
-            next;
+            next PATH_ELEM;
         }
-        local $self->{_curnode} = $node;
-        local $self->{_curpath} = "/" . join("/", @path_elems);
-        my %lsres = $self->_read_cur_dir();
-        if ($lsres{$path_elem}) {
-            $node = $lsres{$path_elem}{node};
-            push @path_elems, $path_elem;
-        } else {
-            die "cd: No such path: ".($self->{_curpath} . ($self->{_curpath} =~ m!/\z! ? "" : "/") . $path_elem);
-        }
-    }
 
-    if      ($which == 1) {
-        $self->{_curnode1} = $node; $self->{_curpath1} = "/" . join("/", @path_elems);
-    } elsif ($which == 2) {
-        $self->{_curnode2} = $node; $self->{_curpath2} = "/" . join("/", @path_elems);
+        my $path_elem_contains_wildcard = String::Wildcard::Bash::contains_wildcard($path_elem);
+        my $path_elem_re;
+        if ($path_elem_contains_wildcard) {
+            $path_elem_re = String::Wildcard::Bash::convert_wildcard_to_re($path_elem);
+            $path_elem_re = qr/\A$path_elem_re\z/;
+        }
+        my @new_entries;
+        for my $entry (@entries) {
+            local $self->{_curnode} = $entry->{node};
+            local $self->{_curpath} = $entry->{path};
+            my @dir = $self->_read_curdir;
+            if ($path_elem_contains_wildcard) {
+                push @new_entries, grep { $_->{name} =~ $path_elem_re } @dir;
+            } else {
+                push @new_entries, grep { $_->{name} eq $path_elem    } @dir;
+            }
+            unless (@new_entries) {
+                $path_exists = 0 if $i < @path_elems;
+                @entries = ();
+                last PATH_ELEM;
+            }
+        }
+        @entries = @new_entries;
+    } # for path_elem
+
+    ($path_exists, @entries);
+}
+
+sub _cd {
+    my ($self, $which_obj, $path_wildcard) = @_;
+    my ($path_exists, @entries) = $self->_glob($which_obj, $path_wildcard);
+    die "No such path '$path_wildcard'" unless @entries;
+    die "Ambiguous path '$path_wildcard'" unless @entries < 2;
+    if ($which_obj == 1) {
+        $self->{_curnode} = $entries[0]{node};
+        $self->{_curpath} = Path::Naive::normalize_path($entries[0]{path});
     } else {
-        $self->{_curnode}  = $node; $self->{_curpath}  = "/" . join("/", @path_elems);
+        $self->{_curnode2} = $entries[0]{node};
+        $self->{_curpath2} = Path::Naive::normalize_path($entries[0]{path});
     }
 }
 
 sub cd {
-    my ($self, $path) = @_;
-    $self->_cd(0, $path);
-}
-
-sub cd1 {
-    my ($self, $path) = @_;
-    $self->_cd(1, $path);
+    my ($self, $path_wildcard) = @_;
+    $self->_cd(1, $path_wildcard);
 }
 
 sub cd2 {
-    my ($self, $path) = @_;
-    $self->_cd(2, $path);
+    my ($self, $path_wildcard) = @_;
+    $self->_cd(2, $path_wildcard);
+}
+
+sub _ls {
+    my ($self, $which_obj, $path_wildcard) = @_;
+
+    my $specifies_path = 1;
+    unless (defined $path_wildcard) {
+        $path_wildcard = '*';
+        $specifies_path = 0;
+    }
+
+    my $cwd = $which_obj == 1 ? $self->{_curpath} : $self->{_curpath2};
+
+    my ($path_exists, @entries) = $self->_glob($which_obj, $path_wildcard);
+    die "No such path '$path_wildcard' (cwd=$cwd)" unless $path_exists;
+    die "No such path '$path_wildcard' (cwd=$cwd)" if !@entries && $specifies_path;
+    @entries;
 }
 
 sub ls {
-    my $re_wildcard;
-    my $save_curnode;
-    my $save_curpath;
-    if (@_ && defined $_[0] && length $_[0]) {
-        my $path = Path::Naive::concat_and_normalize_path($self->{_curpath}, $_[0]);
-        $save_curnode = $self->{_curnode};
-        $save_curpath = $self->{_curpath};
-        say "D:save_curpath=$save_curpath, path=$path";
-        my @path_elems = Path::Naive::normalize_path($path);
-        if (@path_elems && String::Wildcard::Bash::contains_wildcard($path_elems[-1])) {
-            $re_wildcard = String::Wildcard::Bash::convert_wildcard_to_re(pop @path_elems);
-            $re_wildcard = qr/\A$re_wildcard\z/;
-            $path = (Path::Naive::is_abs_path($path) ? "/" : "") . join("/", @path_elems);
-            $path = "/" if $path eq '';
-        }
-        $self->cd($path);
-    }
+    my ($self, $path_wildcard) = @_;
+    $self->_ls(1, $path_wildcard);
+}
 
-
-
-    if (defined $save_curnode) {
-        $self->{_curnode} = $save_curnode;
-        $self->{_curpath} = $save_curpath;
-    }
-
-
+sub ls2 {
+    my ($self, $path_wildcard) = @_;
+    $self->_ls(2, $path_wildcard);
 }
 
 sub _showtree {
@@ -266,26 +274,13 @@ sub get {
     }
 }
 
-sub ls1 {
-    my $self = shift;
-    local $self->{_curnode} = $self->{_curnode1};
-    local $self->{_curpath} = $self->{_curpath1};
-    $self->ls(@_);
-}
-
 sub _cwd {
     my $self = shift;
     my $which = shift;
-    $which == 1 ? $self->{_curpath1} :
-        $which == 2 ? $self->{_curpath2} : $self->{_curpath};
+    $which == 1 ? $self->{_curpath} : $self->{_curpath2};
 }
 
 sub cwd {
-    my $self = shift;
-    $self->_cwd(0);
-}
-
-sub cwd1 {
     my $self = shift;
     $self->_cwd(1);
 }
@@ -309,7 +304,7 @@ sub _cp_or_mv {
     } elsif (defined $self->{_curnode}) {
         $source_suffix = "";
     } else {
-        die "$which: Please load tree1 or tree first";
+        die "$which: Please load tree first";
     }
     my $target_suffix;
     if (defined $self->{_curnode2}) {
@@ -317,7 +312,7 @@ sub _cp_or_mv {
     } elsif (defined $self->{_curnode}) {
         $target_suffix = "";
     } else {
-        die "$which: Please load tree2 or tree first";
+        die "$which: Please load tree or tree2 first";
     }
 
     my $path1_is_abs = Path::Naive::is_abs_path($path1);
@@ -428,7 +423,6 @@ sub rm {
 
  my $fs = Tree::FSMethods->new(
      tree => $tree,
-     # tree1 => $tree,
      # tree2 => $other_tree,
      # filename_method => 'filename',
  );
@@ -471,12 +465,6 @@ arrayref) of children node objects (where the list/array will be empty for a
 leaf node). Note: you can use L<Role::TinyCommons::Tree::Node> to enforce this
 requirement.
 
-=item * tree1
-
-See C<tree>.
-
-Optional. Object. Used for some operations: L</cp>, L</mv>.
-
 =item * tree2
 
 See C<tree>.
@@ -513,14 +501,6 @@ Usage:
 
 Change working directory. Dies on failure.
 
-=head2 cd1
-
-Usage:
-
- $fs->cd1($path);
-
-Change working directory (for C<tree1> object).
-
 =head2 cd2
 
 Usage:
@@ -536,14 +516,6 @@ Usage:
  my $cwd = $fs->cwd;
 
 Return current working directory.
-
-=head2 cwd1
-
-Usage:
-
- my $cwd = $fs->cwd1;
-
-Return current working directory (for C<tree1> object).
 
 =head2 cwd2
 
@@ -565,11 +537,10 @@ Dies on failure (e.g. can't cd to specified path).
 
 Usage:
 
- $fs->cp($path1, $path2);
+ $fs->cp($src_path, $target_path);
 
-Copies nodes from C<tree1> (or C<tree>, if C<tree1> is not loaded)to C<tree2>.
-(or C<tree>, if C<tree2> is not loaded). Dies on failure (e.g. can't find source
-or target path).
+Copies nodes from C<tree> to C<tree2> (or C<tree>, if C<tree2> is not loaded).
+Dies on failure (e.g. can't find source or target path).
 
 Examples:
 
@@ -582,11 +553,10 @@ C<*perl*> to C<proj/> in the target tree.
 
 Usage:
 
- $fs->mv($path1, $path2);
+ $fs->mv($src_path, $target_path);
 
-Moves nodes from C<tree1> (or C<tree>, if C<tree1> is not loaded)to C<tree2>.
-(or C<tree>, if C<tree2> is not loaded). Dies on failure (e.g. can't find source
-or target path).
+Moves nodes from C<tree> to C<tree2> (or C<tree>, if C<tree2> is not loaded).
+Dies on failure (e.g. can't find source or target path).
 
 =head2 readdir
 
