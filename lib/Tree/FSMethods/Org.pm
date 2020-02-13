@@ -10,6 +10,7 @@ use strict;
 use warnings;
 
 use Code::Includable::Tree::NodeMethods;
+use Org::Parser::Tiny;
 
 use parent qw(Tree::FSMethods);
 
@@ -26,17 +27,14 @@ sub new {
         $name;
     };
     if (defined $args{org_file}) {
-        require Org::Parser::Tiny;
         $args{tree} = Org::Parser::Tiny->new->parse_file(
             delete $args{org_file});
     }
     if (defined $args{org_file1}) {
-        require Org::Parser::Tiny;
         $args{tree1} = Org::Parser::Tiny->new->parse_file(
             delete $args{org_file1});
     }
     if (defined $args{org_file2}) {
-        require Org::Parser::Tiny;
         $args{tree2} = Org::Parser::Tiny->new->parse_file(
             delete $args{org_file2});
     }
@@ -75,6 +73,16 @@ sub before_cp {
 sub before_mv {
     my $self = shift;
     $self->before_cp(@_);
+}
+
+sub on_mkdir {
+    my ($self, $node, $filename) = @_;
+    my $child_node = Org::Parser::Tiny::Node::Headline->new;
+    $child_node->level($node->can("level") ? $node->level+1 : 1);
+    $child_node->title($filename);
+    $child_node->parent($node);
+    $node->children([ @{ $node->children }, $child_node ]);
+    $child_node;
 }
 
 1;

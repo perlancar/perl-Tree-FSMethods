@@ -11,6 +11,7 @@ use warnings;
 
 use Code::Includable::Tree::NodeMethods;
 use Path::Naive;
+use Scalar::Util qw(refaddr);
 use Storable qw(dclone);
 use String::Wildcard::Bash;
 
@@ -288,10 +289,10 @@ sub cwd {
     $self->_cwd(1);
 }
 
-sub cwd2 {
-    my $self = shift;
-    $self->_cwd(2);
-}
+#sub cwd2 {
+#    my $self = shift;
+#    $self->_cwd(2);
+#}
 
 sub _cp_or_mv {
     my $self = shift;
@@ -377,6 +378,65 @@ sub rm {
     for my $entry (@entries) {
         Code::Includable::Tree::NodeMethods::remove($entry->{node});
     }
+}
+
+sub _mkdir {
+    my $self = shift;
+    my $which_obj = shift;
+    my $opts = ref($_[0]) eq 'HASH' ? shift : {};
+    my $path = shift;
+
+    my $rootnode = $which_obj == 1 ? $self->{tree} : $self->{tree2};
+    my $curpath  = $which_obj == 1 ? $self->{_curpath} : $self->{_curpath2};
+    die "BUG: curpath '$curpath' is not absolute" unless Path::Naive::is_abs_path($curpath); # sanity check
+    my @path_elems = Path::Naive::split_path(
+        Path::Naive::concat_and_normalize_path($curpath, $path)
+    );
+
+    die "mkdir: / already exists" unless @path_elems;
+
+    local $self->{_curnode} = $rootnode;
+    local $self->{_curpath} = "/";
+
+    my $made_dir;
+    for my $i (0..$#path_elems) {
+        my $path_elem = $path_elems[$i];
+        my @entries = $self->_read_curdir;
+        my $found_entry;
+        for my $entry (@entries) {
+            if ($entry->{name} eq $path_elem) {
+                $found_entry = $entry; last;
+            }
+        }
+        if ($found_entry) {
+            $self->{_curnode} = $found_entry->{node};
+            $self->{_curpath} = $found_entry->{path};
+            next;
+        }
+        if ($opts->{parents} || $i == $#path_elems) {
+            my $new_node = $self->on_mkdir($self->{_curnode}, $path_elem);
+            # reread and find out the actual filename we're given
+            @entries = $self->_read_curdir;
+            my @new_entry = grep { refaddr($_->{node}) == refaddr($new_node) } @entries;
+            die "BUG: Can't create '$path_elem' at $self->{_curpath}: node not found"
+                unless @new_entry == 1;
+            $self->{_curnode} = $new_node;
+            $self->{_curpath} = $new_entry[0]{path};
+            $made_dir++;
+        } else {
+            die "mkdir: No such path '".Path::Naive::concat_path($self->{_curpath}, $path_elem)."'";
+        }
+    }
+
+    die "mkdir: $path already exists"
+        if !$made_dir && !$opts->{parents};
+
+    $self->{_curpath};
+}
+
+sub mkdir {
+    my $self = shift;
+    $self->_mkdir(1, @_);
 }
 
 1;
@@ -466,14 +526,6 @@ Usage:
 
 Change working directory. Dies on failure.
 
-=head2 cd2
-
-Usage:
-
- $fs->cd2($path);
-
-Change working directory (for C<tree2> object).
-
 =head2 cwd
 
 Usage:
@@ -481,14 +533,6 @@ Usage:
  my $cwd = $fs->cwd;
 
 Return current working directory.
-
-=head2 cwd2
-
-Usage:
-
- my $cwd = $fs->cwd2;
-
-Return current working directory (for C<tree2> object).
 
 =head2 ls
 
@@ -513,6 +557,12 @@ Examples:
 
 This will set nodes under C<proj/> in the source tree matching wildcard
 C<*perl*> to C<proj/> in the target tree.
+
+=head2 mkdir
+
+Usage:
+
+ $fs->mkdir([ \%opts, ] $path);
 
 =head2 mv
 
