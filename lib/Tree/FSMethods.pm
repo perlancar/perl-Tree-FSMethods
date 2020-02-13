@@ -270,13 +270,13 @@ sub showtree {
     }, $tree);
 }
 
-sub get {
-    my $self = shift;
-    my $path = shift;
-
-    my ($node, undef) = $self->cd($path);
-    $node;
-}
+#sub get {
+#    my $self = shift;
+#    my $path = shift;
+#
+#    my ($node, undef) = $self->cd($path);
+#    $node;
+#}
 
 sub _cwd {
     my $self = shift;
@@ -522,7 +522,7 @@ If filename is non-unique (in the same "directory"), will append ".2", ".3",
 
 Usage:
 
- $fs->cd($path);
+ $fs->cd($path_wildcard);
 
 Change working directory. Dies on failure.
 
@@ -538,7 +538,7 @@ Return current working directory.
 
 Usage:
 
- my %res = $fs->ls( [ $wildcard, ... ]);
+ my %res = $fs->ls( [ $path_wildcard, ... ]);
 
 Dies on failure (e.g. can't cd to specified path).
 
@@ -546,7 +546,7 @@ Dies on failure (e.g. can't cd to specified path).
 
 Usage:
 
- $fs->cp($src_path, $target_path);
+ $fs->cp($src_path_wildcard, $target_path);
 
 Copies nodes from C<tree> to C<tree2> (or C<tree>, if C<tree2> is not loaded).
 Dies on failure (e.g. can't find source or target path).
@@ -572,6 +572,12 @@ Usage:
 
 Moves nodes from C<tree> to C<tree2> (or C<tree>, if C<tree2> is not loaded).
 Dies on failure (e.g. can't find source or target path).
+
+=head2 rm
+
+Usage:
+
+ $fs->rm($path_wildcard);
 
 =head2 showtree
 
