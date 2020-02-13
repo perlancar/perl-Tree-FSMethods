@@ -82,7 +82,7 @@ sub _read_curdir {
                 do { $name = $new_name; last }
                     unless exists $entries_by_name{$new_name};
                 $suffix++;
-                die "Too many duplicate names ($name)" if $suffix >= 9999;
+                die "_read_curdir: Too many duplicate names ($name)" if $suffix >= 9999;
             }
         }
 
@@ -102,7 +102,7 @@ sub _read_curdir {
 }
 
 # returns: (path exists, @entries)
-sub _glob {
+sub _traverse {
     my $self = shift;
     my ($which_obj, $path_wildcard) = @_;
 
@@ -110,7 +110,7 @@ sub _glob {
     my $curnode  = $which_obj == 1 ? $self->{_curnode} : $self->{_curnode2};
     my $curpath  = $which_obj == 1 ? $self->{_curpath} : $self->{_curpath2};
 
-    die "_glob: No object loaded yet" unless $curnode;
+    die "_traverse: No object loaded yet" unless $curnode;
 
     # starting point of traversal
     my $node = Path::Naive::is_abs_path($path_wildcard) ? $rootnode : $curnode;
@@ -170,9 +170,9 @@ sub _glob {
 
 sub _cd {
     my ($self, $which_obj, $path_wildcard) = @_;
-    my ($path_exists, @entries) = $self->_glob($which_obj, $path_wildcard);
-    die "No such path '$path_wildcard'" unless @entries;
-    die "Ambiguous path '$path_wildcard'" unless @entries < 2;
+    my ($path_exists, @entries) = $self->_traverse($which_obj, $path_wildcard);
+    die "cd: No such path '$path_wildcard'" unless @entries;
+    die "cd: Ambiguous path '$path_wildcard'" unless @entries < 2;
     if ($which_obj == 1) {
         $self->{_curnode} = $entries[0]{node};
         $self->{_curpath} = Path::Naive::normalize_path($entries[0]{path});
@@ -180,6 +180,7 @@ sub _cd {
         $self->{_curnode2} = $entries[0]{node};
         $self->{_curpath2} = Path::Naive::normalize_path($entries[0]{path});
     }
+    ($self->{_curnode}, $self->{_curpath});
 }
 
 sub cd {
@@ -187,10 +188,10 @@ sub cd {
     $self->_cd(1, $path_wildcard);
 }
 
-sub cd2 {
-    my ($self, $path_wildcard) = @_;
-    $self->_cd(2, $path_wildcard);
-}
+#sub cd2 {
+#    my ($self, $path_wildcard) = @_;
+#    $self->_cd(2, $path_wildcard);
+#}
 
 sub _ls {
     my ($self, $which_obj, $path_wildcard) = @_;
@@ -203,9 +204,9 @@ sub _ls {
 
     my $cwd = $which_obj == 1 ? $self->{_curpath} : $self->{_curpath2};
 
-    my ($path_exists, @entries) = $self->_glob($which_obj, $path_wildcard);
-    die "No such path '$path_wildcard' (cwd=$cwd)" unless $path_exists;
-    die "No such path '$path_wildcard' (cwd=$cwd)" if !@entries && $specifies_path;
+    my ($path_exists, @entries) = $self->_traverse($which_obj, $path_wildcard);
+    die "ls: No such path '$path_wildcard' (cwd=$cwd)" unless $path_exists;
+    die "ls: No such path '$path_wildcard' (cwd=$cwd)" if !@entries && $specifies_path;
     @entries;
 }
 
@@ -214,25 +215,27 @@ sub ls {
     $self->_ls(1, $path_wildcard);
 }
 
-sub ls2 {
-    my ($self, $path_wildcard) = @_;
-    $self->_ls(2, $path_wildcard);
-}
+#sub ls2 {
+#    my ($self, $path_wildcard) = @_;
+#    $self->_ls(2, $path_wildcard);
+#}
 
 sub _showtree {
     require Tree::Object::Hash;
 
     my ($self, $path, $node) = @_;
 
-    my %ls_res = $self->ls($path);
+    my @entries = $self->_read_curdir;
 
     my @children;
-    for my $name (sort { $ls_res{$a}{order} <=> $ls_res{$b}{order} } keys %ls_res) {
+    for my $entry (@entries) {
         my $child = Tree::Object::Hash->new;
-        $child->parent($node);
-        $child->{filename} = $name;
+        $child->parent($entry->{node});
+        $child->{filename} = $entry->{name};
         push @children, $child;
-        $self->_showtree("$path/$name", $child);
+        local $self->{_curnode} = $entry->{node};
+        local $self->{_curpath} = Path::Naive::concat_path($self->{_curpath}, $entry->{name});
+        $self->_showtree("$path/$entry->{name}", $child);
     }
     $node->children(\@children);
     $node;
@@ -244,10 +247,17 @@ sub showtree {
     my $self = shift;
     my $starting_path = shift // '.';
 
+    my $save_curnode = $self->{_curnode};
+    my $save_curpath = $self->{_curpath};
+    $self->cd($starting_path);
+
     my $node = Tree::Object::Hash->new;
     $node->{filename} = $starting_path;
 
     my $tree = $self->_showtree($starting_path, $node);
+
+    $self->{_curnode} = $save_curnode;
+    $self->{_curpath} = $save_curpath;
 
     require Tree::ToTextLines;
     Tree::ToTextLines::render_tree_as_text({
@@ -263,15 +273,8 @@ sub get {
     my $self = shift;
     my $path = shift;
 
-    my ($dir, $file) = $path =~ m!(.*/)?(.*)!;
-    $dir //= ".";
-
-    my %ls_res = $self->ls($dir);
-    if ($ls_res{$file}) {
-        return $ls_res{$file}{node};
-    } else {
-        die "get: No such file '$file' in directory '$dir'";
-    }
+    my ($node, undef) = $self->cd($path);
+    $node;
 }
 
 sub _cwd {
@@ -292,85 +295,61 @@ sub cwd2 {
 
 sub _cp_or_mv {
     my $self = shift;
-    my $which = shift;
-    my ($path1, $path2) = @_;
+    my $which_cmd = shift;
+    my ($src_path_wildcard, $target_path) = @_;
 
-    length($path1)     or die "Please specify path1";
-    length($path2)     or die "Please specify path2";
+    length($src_path_wildcard) or die "$which_cmd: Please specify source path";
+    length($target_path)       or die "$which_cmd: Please specify target path";
 
-    my $source_suffix;
-    if (defined $self->{_curnode1}) {
-        $source_suffix = "1";
-    } elsif (defined $self->{_curnode}) {
-        $source_suffix = "";
-    } else {
-        die "$which: Please load tree first";
-    }
-    my $target_suffix;
-    if (defined $self->{_curnode2}) {
-        $target_suffix = "2";
-    } elsif (defined $self->{_curnode}) {
-        $target_suffix = "";
-    } else {
-        die "$which: Please load tree or tree2 first";
-    }
+    # we can move/copy either to 'tree' or 'tree2'. default to 'tree2' when it
+    # is defined, falls back to 'tree'.
+    my $target_obj = defined $self->{_curnode2} ? 2:1;
 
-    my $path1_is_abs = Path::Naive::is_abs_path($path1);
-    my @path1_elems = Path::Naive::normalize_path($path1);
-    die "$which: Must specify source files" unless @path1_elems;
-    my $path1_has_wildcard = String::Wildcard::Bash::contains_wildcard($path1_elems[-1]);
-    my %ls_res;
-    my $ls_source_method = "ls$source_suffix";
-    if ($path1_has_wildcard) {
-        %ls_res = $self->$ls_source_method($path1);
-    } else {
-        my $wanted = pop @path1_elems;
-        $path1 = ($path1_is_abs ? "/" : "./") . join("/", @path1_elems);
-        %ls_res = $self->$ls_source_method($path1);
-        for (keys %ls_res) {
-            delete $ls_res{$_} unless $_ eq $wanted;
-        }
-    }
-    die "$which: No matching source files to copy/move from"
-        unless keys %ls_res;
+    my ($source_path_exists, @source_entries) =
+        $self->_traverse(1, $src_path_wildcard);
+    die "$which_cmd: No such source path '$src_path_wildcard'"
+        unless $source_path_exists;
+    die "$which_cmd: No matching source files for '$src_path_wildcard'"
+        unless @source_entries;
 
-    my $save_target_curnode = $self->{"_curnode$target_suffix"};
-    my $save_target_curpath = $self->{"_curpath$target_suffix"};
-    my $cd_target_method = "cd$target_suffix";
-    $self->$cd_target_method($path2);
+    my ($target_path_exists, @target_entries) =
+        $self->_traverse($target_obj, $target_path);
+    die "$which_cmd: No such target path '$target_path'"
+        unless $target_path_exists;
+    die "$which_cmd: No matching target files for '$target_path'"
+        unless @target_entries;
+    die "$which_cmd: Ambiguous target '$target_path'"
+        unless @target_entries < 2;
+    my $target_entry = $target_entries[0];
 
-    my @nodes_to_process = map { $ls_res{$_}{node} }
-        sort { $ls_res{$a}{order} <=> $ls_res{$b}{order} } keys %ls_res;
-
-    if ($which eq 'cp') {
-        @nodes_to_process = map { dclone($_) } @nodes_to_process;
+    if ($which_cmd eq 'cp') {
+        # clone it first
+        @source_entries = map { dclone($_) } @source_entries;
         if ($self->can("before_cp")) {
-            $self->before_cp(\@nodes_to_process,
-                             $self->{"_curnode$target_suffix"});
+            $self->before_cp([map {$_->{node}} @source_entries],
+                             $target_entry->{node});
         }
-    } elsif ($which eq 'mv') {
+    } elsif ($which_cmd eq 'mv') {
         # remove the nodes from their original parents
-        for my $node (@nodes_to_process) {
-            Code::Includable::Tree::NodeMethods::remove($node);
+        for my $entry (@source_entries) {
+            Code::Includable::Tree::NodeMethods::remove($entry->{node});
         }
         if ($self->can("before_mv")) {
-            $self->before_mv(\@nodes_to_process,
-                             $self->{"_curnode$target_suffix"});
+            $self->before_mv([map {$_->{node}} @source_entries],
+                             $target_entry->{node});
         }
     } else {
-        die "BUG: which must be cp/mv";
+        die "BUG: which_cmd must be cp/mv";
     }
 
     # put as children of the target parent
-    push @{ $self->{"_curnode$target_suffix"}->{children} }, @nodes_to_process;
+    push @{ $target_entry->{node}{children} },
+        map { $_->{node} } @source_entries;
 
     # assign new (target) parent
-    for my $node (@nodes_to_process) {
-        $node->parent( $self->{"_curnode$target_suffix"} );
+    for my $entry (@source_entries) {
+        $entry->{node}->parent( $target_entry->{node} );
     }
-
-    $self->{"_curnode$target_suffix"} = $save_target_curnode;
-    $self->{"_curpath$target_suffix"} = $save_target_curpath;
 }
 
 sub cp {
@@ -385,32 +364,18 @@ sub mv {
 
 sub rm {
     my $self = shift;
-    my $path = shift;
+    my $path_wildcard = shift;
 
-    length($path)     or die "Please specify path";
-    $self->{_curnode} or die "Please load tree first";
+    length($path_wildcard) or die "rm: Please specify path";
+    $self->{_curnode}      or die "rm: Please load tree first";
 
-    my $path_is_abs = Path::Naive::is_abs_path($path);
-    my @path_elems  = Path::Naive::normalize_path($path);
-    die "rm: Must specify files" unless @path_elems;
-    my $path_has_wildcard = String::Wildcard::Bash::contains_wildcard($path_elems[-1]);
-    my %ls_res;
-    if ($path_has_wildcard) {
-        %ls_res = $self->ls($path);
-    } else {
-        my $wanted = pop @path_elems;
-        $path = ($path_is_abs ? "/" : "./") . join("/", @path_elems);
-        %ls_res = $self->ls($path);
-        for (keys %ls_res) {
-            delete $ls_res{$_} unless $_ eq $wanted;
-        }
-    }
-    die "rm: No matching files to delete" unless keys %ls_res;
+    my ($path_exists, @entries) =
+        $self->_traverse(1, $path_wildcard);
+    die "rm: No such path '$path_wildcard'" unless $path_exists;
+    die "rm: No matching files for '$path_wildcard'" unless @entries;
 
-    my @nodes_to_process = map { $ls_res{$_}{node} }
-        sort { $ls_res{$a}{order} <=> $ls_res{$b}{order} } keys %ls_res;
-    for my $node (@nodes_to_process) {
-        Code::Includable::Tree::NodeMethods::remove($node);
+    for my $entry (@entries) {
+        Code::Includable::Tree::NodeMethods::remove($entry->{node});
     }
 }
 
@@ -557,12 +522,6 @@ Usage:
 
 Moves nodes from C<tree> to C<tree2> (or C<tree>, if C<tree2> is not loaded).
 Dies on failure (e.g. can't find source or target path).
-
-=head2 readdir
-
-Usage:
-
- %contents = $fs->readdir($path);
 
 =head2 showtree
 
