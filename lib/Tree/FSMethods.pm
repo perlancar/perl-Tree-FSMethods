@@ -599,9 +599,11 @@ Options:
 
 =item * parents
 
-Boolean. Just like the same option in the Unix utility. If set to true, will
-create intermediate parents as necessary, and will not report error when the
-directory already exists.
+Boolean. Just like the same --parents (-p) option in the Unix utility. If set to
+true, will create intermediate parents as necessary, and will not report error
+when the directory already exists.
+
+=back
 
 =head2 mkdir2
 
