@@ -262,8 +262,8 @@ sub _showtree {
         $tree = $self->_showtree0($starting_path, $node);
     }
 
-    require Tree::ToTextLines;
-    Tree::ToTextLines::render_tree_as_text({
+    require Tree::To::TextLines;
+    Tree::To::TextLines::render_tree_as_text({
         show_guideline => 1,
         on_show_node => sub {
             my ($node, $level, $seniority, $is_last_child, $opts) = @_;
