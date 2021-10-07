@@ -1,10 +1,5 @@
 package Tree::FSMethods;
 
-# AUTHORITY
-# DATE
-# DIST
-# VERSION
-
 use 5.010001;
 use strict;
 use warnings;
@@ -14,6 +9,11 @@ use Path::Naive;
 use Scalar::Util qw(refaddr);
 use Storable qw(dclone);
 use String::Wildcard::Bash;
+
+# AUTHORITY
+# DATE
+# DIST
+# VERSION
 
 sub new {
     my ($class, %args) = (shift, @_);
@@ -652,4 +652,4 @@ Just like L</showtree> but for the second tree (C<tree2>).
 
 =head1 SEE ALSO
 
-L<Role::TinyCommons::Tree>
+L<RoleBundle::TinyCommons::Tree>

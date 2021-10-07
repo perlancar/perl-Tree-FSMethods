@@ -1,10 +1,5 @@
 package Tree::FSMethods::Org;
 
-# AUTHORITY
-# DATE
-# DIST
-# VERSION
-
 use 5.010001;
 use strict;
 use warnings;
@@ -13,6 +8,11 @@ use Code::Includable::Tree::NodeMethods;
 use Org::Parser::Tiny;
 
 use parent qw(Tree::FSMethods);
+
+# AUTHORITY
+# DATE
+# DIST
+# VERSION
 
 sub new {
     my ($class, %args) = (shift, @_);
